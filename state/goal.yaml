@@ -1,0 +1,6 @@
+asset: "XAU/USD"
+target_win_rate: 0.65
+min_profit_factor: 1.5
+max_consecutive_losses: 2  # Continuous loss
+reflection_cadence: 5 # Every 5 trade, reflect once
+one_variable_only: true  # Each reflect modify one variable only

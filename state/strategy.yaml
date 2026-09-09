@@ -1,0 +1,38 @@
+version: "02"
+asset: "XAU/USD"
+
+# 第一层：单时间帧选民模糊化参数
+fuzzification:
+  k_rsi: 0.15
+  k_cci: 0.02
+  delta_stoch_k: 0.10
+  delta_stoch_s: 0.08
+  lambda_mom: 2.0
+
+# 第一层：选民基础权威度权重
+voter_weights:
+  rsi: 0.20
+  cci: 0.20
+  stoch: 0.20
+  macd: 0.20
+  mom: 0.20
+
+# 第二层：多时间帧基础权重矩阵 W_base
+timeframe_weights:
+  1H: 0.35
+  M30: 0.25
+  M15: 0.15
+  M10: 0.10
+  M5: 0.10
+  M1: 0.05
+
+# 第二层：宏观大趋势否决阈值
+macro_veto:
+  veto_trigger_threshold: 0.50   # Macro_SELL 或 Macro_BUY 大于此值触发惩罚
+  veto_pass_threshold: 0.60      # 最终执行时 P_BUY / P_SELL 必须大于此值
+
+# 全局决策引擎阈值
+decision_rules:
+  delta_signal: 0.55             # 触发最低置信度
+  delta_margin: 0.15             # 买卖置信优势差阈值
+  psi_max: 0.60                  # 全局分歧度容忍上限 Psi_max
