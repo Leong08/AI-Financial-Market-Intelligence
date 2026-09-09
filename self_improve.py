@@ -118,7 +118,7 @@ class StrategySelfImprove:
         print("Sending Information to Google Gemini, generating the order hypothesis.")
         try:
             response = self.client.models.generate_content(
-                model="gemini-3.8-flash",
+                model="gemini-2.5-flash",
                 contents = prompt
             )
 
