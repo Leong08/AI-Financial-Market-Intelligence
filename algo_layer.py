@@ -11,12 +11,8 @@ class HierarchicalMTFDSFusion:
         self._load_config()
 
         # 时间帧映射
-        self.timeframes = ['1H', 'M30', 'M15', 'M10', 'M5', 'M1']
+        self.timeframes = ['M5', 'M1']
         self.tf_resample_rules = {
-            '1H': '1h',
-            'M30': '30min',
-            'M15': '15min',
-            'M10': '10min',
             'M5': '5min',
             'M1': '1min'
         }
@@ -249,8 +245,8 @@ class HierarchicalMTFDSFusion:
         m_hat_sell = sum(omega[tf] * m_tf[tf][1] for tf in self.timeframes)
 
         # 5.4 大趋势一票否决机制 (1H 与 M30)
-        macro_sell = max(m_tf['1H'][1], m_tf['M30'][1])
-        macro_buy = max(m_tf['1H'][0], m_tf['M30'][0])
+        macro_sell = max(m_tf['M5'][1], m_tf['M15'][1])
+        macro_buy = max(m_tf['M5'][0], m_tf['M15'][0])
 
         p_buy_penalty = (1.0 - macro_sell) if macro_sell > self.veto_trigger else 1.0
         p_sell_penalty = (1.0 - macro_buy) if macro_buy > self.veto_trigger else 1.0
