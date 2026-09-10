@@ -1,7 +1,7 @@
 version: "02"
 asset: "XAU/USD"
 
-# 第一层：单时间帧选民模糊化参数
+# Tier 1: Single-Timeframe Voter Fuzzification Parameters
 fuzzification:
   k_rsi: 0.15
   k_cci: 0.02
@@ -9,7 +9,7 @@ fuzzification:
   delta_stoch_s: 0.08
   lambda_mom: 2.0
 
-# 第一层：选民基础权威度权重
+# Tier 1: Voter Authority Discount Weights (sum = 1.0)
 voter_weights:
   rsi: 0.20
   cci: 0.20
@@ -17,19 +17,19 @@ voter_weights:
   macd: 0.20
   mom: 0.20
 
-# 第二层：多时间帧基础权重矩阵 W_base
+# Tier 2: Base Inter-Timeframe Weight Matrix W_base
 timeframe_weights:
   M15: 0.15
   M5: 0.10
   M1: 0.05
 
-# 第二层：宏观大趋势否决阈值
+# Tier 2: Macro Trend Veto Gate Thresholds
 macro_veto:
-  veto_trigger_threshold: 0.65   # Macro_SELL 或 Macro_BUY 大于此值触发惩罚
-  veto_pass_threshold: 0.40      # 最终执行时 P_BUY / P_SELL 必须大于此值
+  veto_trigger_threshold: 0.75   # Penalizes when opposing belief exceeds this
+  veto_pass_threshold: 0.10      # Final penalty multiplier must pass this floor
 
-# 全局决策引擎阈值
+# Global Decision Engine Thresholds
 decision_rules:
-  delta_signal: 0.45             # 触发最低置信度
-  delta_margin: 0.08             # 买卖置信优势差阈值
-  psi_max: 0.75                  # 全局分歧度容忍上限 Psi_max
+  delta_signal: 0.35             # Minimum confidence score required to enter
+  delta_margin: 0.08             # Minimum advantage spread between BUY and SELL
+  psi_max: 0.75                  # Maximum allowable cross-timeframe conflict

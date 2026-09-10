@@ -3,14 +3,14 @@ import math
 import yaml
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 class HierarchicalMTFDSFusion:
     def __init__(self, config_path: str = "state/strategy.yaml"):
         self.config_path = config_path
         self._load_config()
 
-        # 时间帧映射
+        # Timeframe mappings
         self.timeframes = ['M5', 'M1']
         self.tf_resample_rules = {
             'M5': '5min',
@@ -34,19 +34,19 @@ class HierarchicalMTFDSFusion:
         }).values()))
 
         rules = cfg.get('decision_rules', {})
-        self.delta_signal = rules.get('delta_signal', 0.55)
-        self.delta_margin = rules.get('delta_margin', 0.15)
-        self.psi_max = rules.get('psi_max', 0.60)
+        self.delta_signal = rules.get('delta_signal', 0.40)
+        self.delta_margin = rules.get('delta_margin', 0.08)
+        self.psi_max = rules.get('psi_max', 0.75)
 
         veto = cfg.get('macro_veto', {})
-        self.veto_trigger = veto.get('veto_trigger_threshold', 0.50)
-        self.veto_pass = veto.get('veto_pass_threshold', 0.60)
+        self.veto_trigger = veto.get('veto_trigger_threshold', 0.75)
+        self.veto_pass = veto.get('veto_pass_threshold', 0.10)
 
     # =========================================================================
-    # 多时间帧数据本地重采样引擎
+    # Multi-timeframe Resampling Engine
     # =========================================================================
     def resample_timeframes(self, df_1m: pd.DataFrame) -> Dict[str, pd.DataFrame]:
-        """将 1 分钟连续数据在本地重采样为 6 个时间帧"""
+        """Resample 1-minute data into multiple target timeframes locally."""
         dfs = {}
         df_work = df_1m.copy()
         df_work['Date'] = pd.to_datetime(df_work['Date'])
@@ -64,14 +64,13 @@ class HierarchicalMTFDSFusion:
                     'Volume': 'sum'
                 }).dropna()
 
-            # 补充指标计算
             res = self._compute_indicators_for_tf(res)
             dfs[tf] = res
 
         return dfs
 
     def _compute_indicators_for_tf(self, df: pd.DataFrame) -> pd.DataFrame:
-        """为特定时间帧计算指标"""
+        """Compute indicator metrics for a single timeframe."""
         # 1. RSI(14)
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
@@ -120,10 +119,10 @@ class HierarchicalMTFDSFusion:
         return df.bfill().ffill()
 
     # =========================================================================
-    # Tier 1: 单时间帧选民模糊化与单帧 D-S 融合
+    # Tier 1: Single-Timeframe Voter Fuzzification & D-S Fusion
     # =========================================================================
     def fuzzify_voters_per_tf(self, row: pd.Series) -> List[np.ndarray]:
-        """按数学模型计算 5 个选民在当前时间帧的 BBA [BUY, SELL, HOLD]"""
+        """Compute basic belief assignments (BBA) for 5 voters."""
         voters = []
 
         # 2.1 RSI Voter
@@ -167,13 +166,12 @@ class HierarchicalMTFDSFusion:
         tot5 = m5_buy + m5_sell + m5_hold
         voters.append(np.array([m5_buy/tot5, m5_sell/tot5, m5_hold/tot5]))
 
-        # 3. Volume-RVol Dynamic Multiplier
+        # 3. Dynamic RVol Multiplier
         rvol = row['RVol']
         vol = row['Volume']
         sma_vol = row['sma_vol20']
         gamma = min(2.0, max(0.5, rvol * math.log10(1.0 + vol / (sma_vol + 1e-9))))
 
-        # 修正方向性信念
         discounted_voters = []
         for v in voters:
             b = np.clip(v[0] * gamma, 0.0, 1.0)
@@ -186,7 +184,7 @@ class HierarchicalMTFDSFusion:
 
     @staticmethod
     def _dempster_combine(m_a: np.ndarray, m_b: np.ndarray) -> np.ndarray:
-        """D-S 正交递推"""
+        """D-S orthogonal sum rule."""
         b_a, s_a, h_a = m_a[0], m_a[1], m_a[2]
         b_b, s_b, h_b = m_b[0], m_b[1], m_b[2]
 
@@ -202,10 +200,8 @@ class HierarchicalMTFDSFusion:
         return vec / vec.sum()
 
     def fuse_single_timeframe(self, row: pd.Series) -> np.ndarray:
-        """第 4 节：单帧内 D-S 证据融合，输出 M_tau = [m(BUY), m(SELL), m(HOLD)]"""
         voters = self.fuzzify_voters_per_tf(row)
 
-        # 4.1 绩效权重折现
         discounted = []
         for i in range(5):
             alpha = self.voter_weights[i]
@@ -214,7 +210,6 @@ class HierarchicalMTFDSFusion:
             h = max(0.0, 1.0 - b - s)
             discounted.append(np.array([b, s, h]))
 
-        # 4.3 递推组合
         accum = discounted[0]
         for i in range(1, 5):
             accum = self._dempster_combine(accum, discounted[i])
@@ -222,31 +217,28 @@ class HierarchicalMTFDSFusion:
         return accum
 
     # =========================================================================
-    # Tier 2: 跨时间帧分层融合、宏观大趋势否决与决策引擎
+    # Tier 2: Inter-Timeframe Fusion & Decision Evaluation
     # =========================================================================
     def evaluate_global_decision(self, df_1m: pd.DataFrame) -> Dict:
-        """主评估流程：执行全部 6 帧分析、宏观否决与最终信号生成"""
         tf_dfs = self.resample_timeframes(df_1m)
 
-        # 获取各时间帧最新截面的单帧融合向量 M_tau
         m_tf = {}
         for tf in self.timeframes:
             latest_row = tf_dfs[tf].iloc[-1]
             m_tf[tf] = self.fuse_single_timeframe(latest_row)
 
-        # 5.2 基于信息确定性的动态权重修正 Omega_tau
-        certainty = {tf: 1.0 - m_tf[tf][2] for tf in self.timeframes}  # eta = 1 - m(HOLD)
+        # Certainty-weighted dynamic weighting
+        certainty = {tf: 1.0 - m_tf[tf][2] for tf in self.timeframes}
         weighted_certainty = {tf: self.w_base[tf] * certainty[tf] for tf in self.timeframes}
         sum_wc = sum(weighted_certainty.values()) + 1e-9
         omega = {tf: weighted_certainty[tf] / sum_wc for tf in self.timeframes}
 
-        # 5.3 线性多时间帧合成
         m_hat_buy = sum(omega[tf] * m_tf[tf][0] for tf in self.timeframes)
         m_hat_sell = sum(omega[tf] * m_tf[tf][1] for tf in self.timeframes)
 
-        # 5.4 大趋势一票否决机制 (1H 与 M30)
-        macro_sell = max(m_tf['M5'][1], m_tf['M15'][1])
-        macro_buy = max(m_tf['M5'][0], m_tf['M15'][0])
+        # Macro trend veto (M5 check)
+        macro_sell = m_tf['M5'][1]
+        macro_buy = m_tf['M5'][0]
 
         p_buy_penalty = (1.0 - macro_sell) if macro_sell > self.veto_trigger else 1.0
         p_sell_penalty = (1.0 - macro_buy) if macro_buy > self.veto_trigger else 1.0
@@ -255,13 +247,11 @@ class HierarchicalMTFDSFusion:
         m_final_sell = m_hat_sell * p_sell_penalty
         m_final_hold = max(0.0, 1.0 - m_final_buy - m_final_sell)
 
-        # 6.1 全局分歧度量化 Psi_global
         diff_sq = sum((m_tf[tf][0] - m_tf[tf][1]) ** 2 for tf in self.timeframes)
         psi_global = math.sqrt(diff_sq / len(self.timeframes))
 
-        # 6.2 最终开仓逻辑判断
         decision = "HOLD"
-        reason = "信号未满足多时间帧共振条件"
+        reason = "Signals do not meet MTF resonance criteria"
 
         buy_cond = (
             (m_final_buy >= self.delta_signal) and
@@ -279,17 +269,16 @@ class HierarchicalMTFDSFusion:
 
         if buy_cond:
             decision = "BUY"
-            reason = f"多时间帧看涨共振 (Score: {m_final_buy:.2f}, 逆势惩罚乘数: {p_buy_penalty:.2f})"
+            reason = f"Multi-timeframe bullish resonance (Score: {m_final_buy:.2f}, Veto Penalty: {p_buy_penalty:.2f})"
         elif sell_cond:
             decision = "SELL"
-            reason = f"多时间帧看跌共振 (Score: {m_final_sell:.2f}, 逆势惩罚乘数: {p_sell_penalty:.2f})"
+            reason = f"Multi-timeframe bearish resonance (Score: {m_final_sell:.2f}, Veto Penalty: {p_sell_penalty:.2f})"
         else:
             if psi_global > self.psi_max:
-                reason = f"全局跨时间帧分歧过大避险 (Psi={psi_global:.2f} > {self.psi_max})"
+                reason = f"Conflict avoidance (Psi={psi_global:.2f} > {self.psi_max})"
             elif p_buy_penalty <= self.veto_pass or p_sell_penalty <= self.veto_pass:
-                reason = "大时间帧(1H/M30)反向趋势一票否决拦截"
+                reason = "Blocked by macro counter-trend veto"
 
-        # 提取基准价格与 ATR 风控目标
         p_current = tf_dfs['M1']['Close'].iloc[-1]
         atr_1m = tf_dfs['M1']['ATR14'].iloc[-1]
         sl = round(p_current - 1.8 * atr_1m if decision == "BUY" else p_current + 1.8 * atr_1m, 2)
@@ -306,20 +295,3 @@ class HierarchicalMTFDSFusion:
             "psi_global": round(psi_global, 4),
             "tf_beliefs": {tf: [round(x, 3) for x in m_tf[tf]] for tf in self.timeframes}
         }
-
-if __name__ == "__main__":
-    import pandas as pd
-    file = "data/XAU_USD_prices.csv"
-    if os.path.exists(file):
-        df_1m = pd.read_csv(file)
-        model = HierarchicalMTFDSFusion()
-        res = model.evaluate_global_decision(df_1m)
-        print("\n=== 分层多时间帧 D-S 融合决策评估结果 ===")
-        print(f"标的价格: ${res['price']:.2f}")
-        print(f"最终决策: 【{res['decision']}】 -> {res['reason']}")
-        print(f"最终信念得分: {res['m_final']}")
-        print(f"跨时间帧全局分歧度 (Psi): {res['psi_global']}")
-        print(f"各时间帧输出 [BUY, SELL, HOLD]: {res['tf_beliefs']}")
-        print(f"大趋势否决惩罚乘数: {res['macro_veto']}")
-        if res['decision'] != "HOLD":
-            print(f"建议止损(SL): ${res['sl']} | 止盈(TP): ${res['tp']}")

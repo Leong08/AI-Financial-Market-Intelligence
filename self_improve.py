@@ -22,10 +22,9 @@ class StrategySelfImprove:
 
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise ValueError("Gemini API key not found, please check .env file")
+            raise ValueError("GEMINI_API_KEY not found in environment or .env file.")
 
         self.client = genai.Client(api_key=api_key)
-
 
     def _load_yaml(self, path: str) -> dict:
         with open(path, "r", encoding="utf-8") as f:
@@ -42,7 +41,6 @@ class StrategySelfImprove:
         return trades
 
     def should_reflect(self) -> bool:
-        # Check the number of closed trade is sufficient or not since last reflection
         trades = self._read_closed_trades()
         if not trades:
             return False
@@ -58,12 +56,11 @@ class StrategySelfImprove:
         trades_since_last_reflection = len(trades) - (num_hypotheses * cadence)
         return trades_since_last_reflection >= cadence
 
-
     def run_reflection(self):
         trades = self._read_closed_trades()
         goal = self._load_yaml(self.goal_file)
         current_strategy = self._load_yaml(self.strategy_file)
-        current_version = current_strategy.get("version", "v01")
+        current_version = str(current_strategy.get("version", "01"))
 
         cadence = goal.get("reflection_cadence", 5)
         recent_trades = trades[-cadence:]
@@ -74,13 +71,13 @@ class StrategySelfImprove:
         total_pnl = round(sum(t.get("pnl", 0.0) for t in recent_trades), 2)
 
         print("="*80)
-        print(f"[AI Self Reflection Engine]  Reflected the recent {len(recent_trades)} trades")
-        print(f"Model Performance:  Win Rate: {win_rate:.2f}% ({wins} win / {losses} Losses)  |  Net P&L: {total_pnl:.2f}%")
+        print(f"[AI Reflection Engine] Reflecting on the recent {len(recent_trades)} trades")
+        print(f"Performance: Win Rate: {win_rate*100:.1f}% ({wins}W / {losses}L) | Net P&L: ${total_pnl:.2f}")
         print("="*80)
 
         prompt = f"""
-        You are the quantitative research brain of a self-improving algorithmic trading agent for XAU/USD.
-        We use a Hierarchical Multi-Timeframe (1H, M30, M15, M10, M5, M1) Dempster-Shafer (D-S) Evidence Fusion Model.
+        You are the quantitative research brain of an autonomous self-improving trading agent for XAU/USD.
+        Framework: Hierarchical Multi-Timeframe Dempster-Shafer (D-S) Evidence Fusion Model.
 
         Goal Specification:
         {json.dumps(goal, indent=2)}
@@ -88,42 +85,41 @@ class StrategySelfImprove:
         Current Strategy Parameters ({current_version}):
         {json.dumps(current_strategy, indent=2)}
 
-        Recent {len(recent_trades)} Closed Trades Outcome & Feature Snapshots:
+        Recent {len(recent_trades)} Closed Trades with Snapshot Data:
         {json.dumps(recent_trades, indent=2)}
 
-        CRITICAL SCIENTIFIC METHOD CONSTRAINTS:
-        1. You MUST change EXACTLY ONE variable from the Current Strategy parameters. Changing more than one variable is STRICTLY FORBIDDEN.
-        2. The candidate variables you can optimize are:
-           - decision_rules.delta_signal (range 0.45 to 0.70)
-           - decision_rules.delta_margin (range 0.10 to 0.25)
-           - decision_rules.psi_max (range 0.40 to 0.75)
-           - macro_veto.veto_trigger_threshold (range 0.40 to 0.65)
-           - macro_veto.veto_pass_threshold (range 0.50 to 0.75)
+        SCIENTIFIC METHOD CONSTRAINTS:
+        1. You MUST modify EXACTLY ONE numeric variable from the Current Strategy.
+        2. Allowed candidate parameters:
+           - decision_rules.delta_signal (range 0.30 to 0.65)
+           - decision_rules.delta_margin (range 0.05 to 0.20)
+           - decision_rules.psi_max (range 0.50 to 0.85)
+           - macro_veto.veto_trigger_threshold (range 0.50 to 0.80)
+           - macro_veto.veto_pass_threshold (range 0.05 to 0.40)
            - fuzzification.k_rsi (range 0.10 to 0.25)
            - fuzzification.k_cci (range 0.01 to 0.04)
-        3. Analyze why the losing trades failed based on their 'entry_snapshot' (e.g., was psi_global too high indicating cross-timeframe conflict? Was delta_signal too loose? Was macro_veto not strict enough?).
-        4. Provide a clear scientific hypothesis explaining why changing this ONE variable will improve future risk-adjusted returns.
+        3. Diagnose failure modes (e.g., psi_global too high, entry barrier too loose/tight).
+        4. Provide an empirical hypothesis explaining why this SINGLE mutation will improve returns.
 
-        Respond STRICTLY in valid JSON format with no markdown wrappers or additional text:
+        Return ONLY a raw, valid JSON object without markdown formatting:
         {{
-          "diagnosis": "Brief explanation of what went wrong in the losing trades",
+          "diagnosis": "Root cause explanation of losing trades",
           "target_section": "decision_rules or macro_veto or fuzzification",
-          "target_parameter": "parameter_name_here",
+          "target_parameter": "parameter_name",
           "old_value": 0.0,
           "new_value": 0.0,
-          "hypothesis": "Clear statement: By changing X from old to new, we expect Y"
+          "hypothesis": "Clear testable statement: By altering X from old to new, we expect Y"
         }}
         """
 
-        print("Sending Information to Google Gemini, generating the order hypothesis.")
+        print("Requesting reflection from Google Gemini (gemini-2.0-flash)...")
         try:
             response = self.client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents = prompt
+                model="gemini-2.0-flash",
+                contents=prompt
             )
 
             raw_text = response.text.strip()
-
             if raw_text.startswith("```json"):
                 raw_text = raw_text[7:]
             if raw_text.startswith("```"):
@@ -134,7 +130,7 @@ class StrategySelfImprove:
             reflection_result = json.loads(raw_text.strip())
 
         except Exception as e:
-            print(f"Model Interpretation Error: {e}")
+            print(f"Model Inference Error: {e}")
             return
 
         section = reflection_result.get("target_section")
@@ -143,25 +139,23 @@ class StrategySelfImprove:
         old_val = reflection_result.get("old_value")
 
         if section not in current_strategy or param not in current_strategy[section]:
-            print(f"Current parameter {param} not in current strategy {section}")
+            print(f"Parameter '{param}' not found under section '{section}' in current strategy.")
             return
 
-        # 1. Archive current old strategy version
-        next_ver_num = int(current_version.replace("v", "")) + 1
-        next_version = f"v{next_ver_num:02d}"
-        archive_path = os.path.join(self.history_dir, f"{current_version}.yaml")
+        # 1. Archive previous version
+        clean_ver = int(current_version.replace("v", ""))
+        next_version = f"v{clean_ver + 1:02d}"
+        archive_path = os.path.join(self.history_dir, f"v{clean_ver:02d}.yaml")
         shutil.copyfile(self.strategy_file, archive_path)
-        print(f"Current Strategy Version: {archive_path}")
 
-        # 2. Update parameter and generate new version
+        # 2. Update parameter and bump version
         current_strategy[section][param] = new_val
         current_strategy["version"] = next_version
 
         with open(self.strategy_file, "w", encoding="utf-8") as f:
             yaml.dump(current_strategy, f, sort_keys=False)
 
-
-        # 3. Record scientific hypothesis to hypothesis.jsonl
+        # 3. Append mutation log
         hypothesis_record = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "from_version": current_version,
@@ -175,12 +169,7 @@ class StrategySelfImprove:
             f.write(json.dumps(hypothesis_record) + "\n")
 
         print("="*80)
-        print(f"Strategy Updated: [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 【{current_version} -> {next_version}】")
-        print(f"Updated Parameter: {section}.{param}: {old_val} -> {new_val}")
+        print(f"Strategy Evolved: [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [{current_version} -> {next_version}]")
+        print(f"Mutated Parameter: {section}.{param}: {old_val} -> {new_val}")
         print(f"Scientific Hypothesis: {reflection_result.get('hypothesis')}")
         print("="*80 + "\n")
-
-if __name__ == "__main__":
-    improver = StrategySelfImprove()
-    improver.run_reflection()
-
